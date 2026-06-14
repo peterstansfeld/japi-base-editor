@@ -22,8 +22,8 @@ Only the editor *component* lives in this repo:
   (used by File > Open and the Japi Commander).
 - `sim/` — the host build. It does **not** contain the platform; it links
   against JapiBase's canonical simulator and headers (see Build).
-- `tools/` — the screenshot generator used for the README images.
-- `Font Editor/` — a standalone Linux tool for designing the device font.
+- `tools/` — the screenshot generator (README images) and the manual PDF
+  builder (`make_pdf.py` + `fonts/`).
 
 The platform API the editor is written against (`japi_base.h`) and the
 desktop simulator (`japi_sim.c`) live in the **JapiBase** repository, not
