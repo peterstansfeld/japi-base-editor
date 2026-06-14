@@ -9,9 +9,9 @@ keyboard.
 
 ![Japi Base Editor running on the platform](images/showcase.png)
 
-**This is the first version.** It runs on real Japi Base hardware over
+**This is v1.0, the first version.** It runs on real Japi Base hardware over
 VGA + PS/2. A second version with a built-in contextual help system is on
-the way.
+the way. See [Versioning](#versioning) for what the `1` means.
 
 ## The hardware
 
@@ -169,6 +169,24 @@ current program, but that interpreter is developed on its own track.
   you have selected. This is the headline feature of the next version.
 - **More Japi Commander** — move, delete, rename, make-directory.
 - More syntax schemes and editor polish.
+
+## Versioning
+
+Japi Base Editor uses the same Linux-style even/odd scheme as the
+[Japi Base platform](https://github.com/JanFromBelgium/japi-base#versioning), on
+its own version line, so the number tells you whether a release is stable or
+experimental:
+
+- **Even major versions are production releases** — stable and ready to use
+  (2.0, 2.2 …). The minor number increments for stable, non-fundamental updates.
+- **Odd major versions are development releases** — work in progress that is not
+  yet production-stable. When it stabilises it graduates to the next even
+  production version.
+
+**This is v1.0 — an odd, development release.** It runs on real hardware and is
+yours to try, but it is a first version, not a production-stable one. The
+built-in contextual help system and a more capable Japi Commander are still to
+come; when the editor settles it will graduate to v2.0.
 
 ## License
 
