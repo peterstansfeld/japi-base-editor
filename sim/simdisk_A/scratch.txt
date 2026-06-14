@@ -1,0 +1,41 @@
+-- JBE scratch file --
+This file is the safe sandbox for JBE testing.
+Type, edit, Ctrl+S, reload -- go wild.
+Real source files (like jbe.c) should never be opened in the editor
+during development.
+
+The quick brown fox jumps over the lazy dog.
+0123456789  !@#$%^&*()  Belgian/French AltGr: e e a c u u L 2
+
+--- Stream-selection drill (Shift + arrows) ---
+Shift+RIGHT extends one char at a time, Shift+DOWN one visual row.
+Try selecting 'lazy dog' on the line above with Shift+arrows, then
+Ctrl+C, move elsewhere, Ctrl+V. Try Ctrl+X on a selection too.
+
+--- Block-selection drill (Ctrl+Shift + arrows) ---
+Put the cursor in column 1 of the table below (on the digit just after
+the 'r' marker). Hit Ctrl+Shift+RIGHT a few times to extend the block
+horizontally, then Ctrl+Shift+DOWN to extend it vertically. The
+selection should be a rectangle, not a stream slang.
+
+  row name      type    val   // comment
+  r 01 alpha     int     12   // first row
+  r 02 beta      int     34   // second
+  r 03 gamma     int     56   // third one
+  r 04 delta     int     78   // last in this block
+  r 05 epsilon   int     90   // bonus row
+  r 06 zeta      int    112   // and another
+  r 07 eta       int    134   // good for big block
+
+Suggested experiments:
+ * Block-select the whole 'val' column (col around 27..30) over 7 rows
+   and Ctrl+X -- column disappears, rows stay aligned.
+ * Ctrl+V at column 0 of an empty line -- the rectangle reappears with
+   leading spaces padding to keep its original column.
+ * Block-select the '// comment' tails and Ctrl+X to strip them.
+
+--- Long line test (char-wrap) ---
+Here comes a deliberately long line meant to demonstrate the char-wrap behaviour of JBE step 4 -- this single logical line keeps going beyond 125 columns so the editor must break it into multiple visual rows with a small red marker on every sub-row except the last, which is precisely what we want.
+Short line after the long one to verify cursor navigation per visual row.
+
+--- End of scratch ---

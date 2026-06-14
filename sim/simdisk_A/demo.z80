@@ -1,0 +1,32 @@
+; ============================================================
+; demo.z80 -- JBE syntax highlight demonstrator
+; mnemonics white, registers magenta, directives cyan,
+; numbers yellow, strings cyan, comments green.
+; ============================================================
+
+        ORG     $8000           ; load address
+        EQU     SCREEN, $4000
+
+START:  LD      A, 0
+        LD      B, 8            ; loop count
+        LD      HL, MESSAGE
+LOOP:   LD      A, (HL)
+        CP      0
+        JR      Z, DONE
+        CALL    PRINT_CHAR
+        INC     HL
+        DJNZ    LOOP
+DONE:   HALT
+
+PRINT_CHAR:
+        PUSH    AF
+        OUT     ($FE), A
+        POP     AF
+        RET
+
+MESSAGE:
+        DB      "Hello, Z80!", 13, 10, 0
+COUNT:  DEFW    $1234
+PAD:    DEFS    16              ; reserve 16 bytes
+
+        END     START

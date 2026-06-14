@@ -1,0 +1,9 @@
+sim_demo
+sim_test
+seam_app
+jbe
+jbe_test
+simdisk_A/*
+!simdisk_A/scratch.txt
+!simdisk_A/demo.z80
+simdisk_C/

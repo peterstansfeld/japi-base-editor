@@ -1,0 +1,25 @@
+build/
+Pictures/
+*.uf2
+*.elf
+*.o
+*.d
+*.wav
+
+# Screenshot generator: keep the compiled binary and sim-disk artifacts out of
+# git (the generated PNGs in screenshots/ are committed as manual assets).
+tools/screenshot
+simdisk_A/
+simdisk_C/
+*.ppm
+
+# Manual build: only the rendered PDF is committed. The Markdown source and
+# the intermediate HTML stay local (the source feeds tools/make_pdf.py).
+JBE_MANUAL.md
+JBE_MANUAL.html
+
+# Interne Nederlandse planning/context docs — niet publiceren
+Architectuurdocument Japi Base Editor.txt
+Context Japi
+Planning Japi
+.claude/worktrees/
