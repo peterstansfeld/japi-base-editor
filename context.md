@@ -101,7 +101,7 @@ for the Pico against the on-device `japi_base.h` (via `jbe_main_pico.c`).
 These reflect the Japi Base keyboard driver:
 
 - **Ctrl + any printable ASCII works.** Bind freely with the macro form
-  `JAPI_KEY_CTRL(c)` (for example `JAPI_KEY_CTRL('B')`), and keep the macro
+  `JAPI_KEY_CTRL(c)` (for example `JAPI_KEY_CTRL('B')`) and keep the macro
   rather than a bare hex code so the intent stays readable.
 - **Ctrl+M is Enter.** The keyboard layer maps it to carriage return (the
   50-year-old ASCII convention), so it cannot be a free binding — which is why
