@@ -354,6 +354,7 @@ typedef struct {
     int            commander_input_kind;  /* 0 = mkdir, 1 = rename */
     char           commander_input[80];
     int            commander_input_len;
+    int            commander_input_cur;   /* caret index within the field, 0..len */
     bool           commander_confirm_delete;
 
     /* Windows-style clipboard: Ctrl+C / Ctrl+X snapshot the tagged (or current)

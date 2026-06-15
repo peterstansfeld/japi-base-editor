@@ -1732,11 +1732,25 @@ int main(void) {
         CHECK(!e.commander_input_active, "Enter closes the prompt");
         { japi_dir_t d; CHECK(japi_opendir(&d, "A:tdir"), "Ctrl+N created the folder"); }
 
-        /* Esc cancels the prompt without acting. */
+        /* The name field edits like a text box: type "tdr", move the caret left
+           one (onto 'r'), insert 'i' -> "tdir", with the caret tracking along. */
         jbe_handle_key(&e, JAPI_KEY_CTRL('N'));
-        jbe_handle_key(&e, 'z');
+        jbe_handle_key(&e, 't'); jbe_handle_key(&e, 'd'); jbe_handle_key(&e, 'r');
+        CHECK(e.commander_input_len == 3 && e.commander_input_cur == 3 &&
+              strcmp(e.commander_input, "tdr") == 0, "typed tdr, caret at end");
+        jbe_handle_key(&e, JAPI_KEY_LEFT);
+        CHECK(e.commander_input_cur == 2, "Left moves the caret back one");
+        jbe_handle_key(&e, 'i');
+        CHECK(strcmp(e.commander_input, "tdir") == 0 && e.commander_input_cur == 3,
+              "typing inserts at the caret, not at the end");
+        /* Home then Delete removes the leading 't' -> "dir". */
+        jbe_handle_key(&e, JAPI_KEY_HOME);
+        CHECK(e.commander_input_cur == 0, "Home jumps to the start");
+        jbe_handle_key(&e, JAPI_KEY_DELETE);
+        CHECK(strcmp(e.commander_input, "dir") == 0 && e.commander_input_cur == 0,
+              "Delete removes the char at the caret");
         jbe_handle_key(&e, JAPI_KEY_ESCAPE);
-        CHECK(!e.commander_input_active, "Esc cancels the prompt");
+        CHECK(!e.commander_input_active, "Esc cancels the edited prompt");
 
         /* Delete an (empty) folder: put the cursor on tdir, Delete, confirm with
            Y. japi_remove drops empty dirs, so the folder must be gone after. */
@@ -1751,6 +1765,37 @@ int main(void) {
             CHECK(e.commander_confirm_delete, "Delete on a folder asks to confirm");
             jbe_handle_key(&e, 'Y');
             { japi_dir_t d; CHECK(!japi_opendir(&d, "A:tdir"), "Y removed the empty folder"); }
+        }
+
+        /* Case-only rename (rn.txt -> RN.TXT). The host disk is case-sensitive,
+           so this exercises the temp-name hop in commander_do_rename and proves
+           it does not lose the file; the real FAT case-insensitive failure it
+           guards against is hardware-only. */
+        {
+            CHECK(make_fixture("A:rn.txt", "x"), "write rename fixture");
+            /* Reopen the Commander so the pane reloads and shows the new file. */
+            jbe_handle_key(&e, JAPI_KEY_CTRL('J'));    /* close */
+            jbe_handle_key(&e, JAPI_KEY_CTRL('J'));    /* open -> fresh listing */
+            ui_filelist_t *ap = &e.commander_list[0];
+            for (int g = 0; g < ap->n_entries &&
+                 strcmp(ap->entries[ap->sel].name, "rn.txt") != 0; g++)
+                jbe_handle_key(&e, JAPI_KEY_DOWN);
+            CHECK(strcmp(ap->entries[ap->sel].name, "rn.txt") == 0, "cursor on rn.txt");
+            jbe_handle_key(&e, JAPI_KEY_CTRL('R'));    /* prefilled with rn.txt */
+            while (e.commander_input_len > 0) jbe_handle_key(&e, JAPI_KEY_BACKSPACE);
+            const char *up = "RN.TXT";
+            for (int i = 0; up[i]; i++) jbe_handle_key(&e, (uint16_t)up[i]);
+            jbe_handle_key(&e, JAPI_KEY_ENTER);
+            CHECK(strstr(e.commander_msg, "Renamed") != NULL, "case-only rename succeeds");
+            {
+                japi_file_t f;
+                bool ok = japi_fopen(&f, "A:RN.TXT", JAPI_READ);
+                if (ok) japi_fclose(&f);
+                CHECK(ok, "RN.TXT exists after rename");
+            }
+            japi_remove("A:RN.TXT");
+            japi_remove("A:rn.txt");
+            jbe_handle_key(&e, JAPI_KEY_HOME);   /* leave the cursor at the top */
         }
 
         /* Windows-style copy: select cz.txt in A:, Ctrl+C, Tab to C:, Ctrl+V. */

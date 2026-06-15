@@ -3695,6 +3695,7 @@ static void commander_open(jbe_state_t *s) {
     s->commander_input_active   = false;
     s->commander_confirm_delete = false;
     s->commander_input_len      = 0;
+    s->commander_input_cur      = 0;
     s->commander_input[0]       = 0;
     s->clip_n                   = 0;
     for (int p = 0; p < 2; p++) {
@@ -3863,6 +3864,19 @@ static void commander_do_mkdir(jbe_state_t *s, const char *name) {
              ok ? "Created folder %s" : "Could not create %s", name);
 }
 
+/* ASCII case-insensitive name compare (dependency-free, no strcasecmp). Used to
+   spot a rename that only changes letter case, which needs special handling on
+   a case-insensitive volume. */
+static bool names_equal_ci(const char *a, const char *b) {
+    for (; *a && *b; a++, b++) {
+        char ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
+        if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
+        if (ca != cb) return false;
+    }
+    return *a == *b;            /* equal only if both ended together */
+}
+
 /* Ctrl+R (after the name prompt): rename the selected file. The platform has no
    rename, so copy to the new name in the same folder, then remove the old. */
 static void commander_do_rename(jbe_state_t *s, const char *newname) {
@@ -3870,15 +3884,41 @@ static void commander_do_rename(jbe_state_t *s, const char *newname) {
     if (!e) return;
     ui_filelist_t *a = &s->commander_list[s->commander_pane];
     char oldname[UI_FILELIST_NAME_MAX + 1]; snprintf(oldname, sizeof oldname, "%s", e->name);
+
+    if (strcmp(oldname, newname) == 0) {        /* nothing actually changed */
+        snprintf(s->commander_msg, sizeof s->commander_msg, "Name unchanged");
+        return;
+    }
+
     char spath[200], dpath[200];
     cmd_join(spath, sizeof spath, a->cwd, oldname);
     cmd_join(dpath, sizeof dpath, a->cwd, newname);
-    long total = cmd_copy_file(spath, dpath);
-    if (total < 0) { cmd_reload(a);
-        snprintf(s->commander_msg, sizeof s->commander_msg, "Rename of %s failed", oldname); return; }
-    japi_remove(spath);
+
+    if (names_equal_ci(oldname, newname)) {
+        /* Case-only rename (e.g. file.txt -> FILE.TXT). On a case-insensitive
+           volume (the SD card / FAT) the old and new names are one and the same
+           physical file, so we cannot copy it onto itself -- the second open
+           fails. Hop through a temporary name instead: old -> tmp, drop old,
+           tmp -> new, drop tmp. If the second copy fails, restore the original
+           so nothing is lost. */
+        char tpath[200];
+        cmd_join(tpath, sizeof tpath, a->cwd, ".jbe_rename.tmp");
+        if (cmd_copy_file(spath, tpath) < 0) { cmd_reload(a);
+            snprintf(s->commander_msg, sizeof s->commander_msg, "Rename of %s failed", oldname); return; }
+        japi_remove(spath);
+        if (cmd_copy_file(tpath, dpath) < 0) {
+            cmd_copy_file(tpath, spath);        /* best-effort restore */
+            japi_remove(tpath);
+            cmd_reload(a);
+            snprintf(s->commander_msg, sizeof s->commander_msg, "Rename of %s failed", oldname); return;
+        }
+        japi_remove(tpath);
+    } else {
+        if (cmd_copy_file(spath, dpath) < 0) { cmd_reload(a);
+            snprintf(s->commander_msg, sizeof s->commander_msg, "Rename of %s failed", oldname); return; }
+        japi_remove(spath);
+    }
     cmd_reload(a);
-    (void)oldname;
     snprintf(s->commander_msg, sizeof s->commander_msg, "Renamed to %s", newname);
 }
 
@@ -3889,27 +3929,49 @@ static void commander_prompt(jbe_state_t *s, int kind, const char *prefill) {
     s->commander_msg[0]       = 0;
     snprintf(s->commander_input, sizeof s->commander_input, "%s", prefill ? prefill : "");
     s->commander_input_len    = (int)strlen(s->commander_input);
+    s->commander_input_cur    = s->commander_input_len;   /* caret starts at the end */
 }
 
 static void commander_handle_key(jbe_state_t *s, uint16_t k) {
-    /* Modal name prompt for mkdir / rename. */
+    /* Modal name prompt for mkdir / rename. The field edits like a one-line
+       text box: the caret (commander_input_cur) moves with the arrows / Home /
+       End, typing inserts at the caret, and Backspace / Delete remove the
+       character before / at it. */
     if (s->commander_input_active) {
+        int  *cur = &s->commander_input_cur;
+        int  *len = &s->commander_input_len;
+        char *buf = s->commander_input;
         if (k == JAPI_KEY_ESCAPE) { s->commander_input_active = false; return; }
         if (k == JAPI_KEY_ENTER) {
             s->commander_input_active = false;
-            if (s->commander_input_len > 0) {
-                if (s->commander_input_kind == 0) commander_do_mkdir(s, s->commander_input);
-                else                              commander_do_rename(s, s->commander_input);
+            if (*len > 0) {
+                if (s->commander_input_kind == 0) commander_do_mkdir(s, buf);
+                else                              commander_do_rename(s, buf);
             }
             return;
         }
+        if (k == JAPI_KEY_LEFT)  { if (*cur > 0)    (*cur)--;   return; }
+        if (k == JAPI_KEY_RIGHT) { if (*cur < *len) (*cur)++;   return; }
+        if (k == JAPI_KEY_HOME)  { *cur = 0;                    return; }
+        if (k == JAPI_KEY_END)   { *cur = *len;                 return; }
         if (k == JAPI_KEY_BACKSPACE) {
-            if (s->commander_input_len > 0) s->commander_input[--s->commander_input_len] = 0;
+            if (*cur > 0) {                       /* drop the char left of the caret */
+                memmove(buf + *cur - 1, buf + *cur, (size_t)(*len - *cur) + 1);
+                (*cur)--; (*len)--;
+            }
             return;
         }
-        if (k >= 32 && k < 127 && s->commander_input_len < (int)sizeof s->commander_input - 1) {
-            s->commander_input[s->commander_input_len++] = (char)k;
-            s->commander_input[s->commander_input_len]   = 0;
+        if (k == JAPI_KEY_DELETE) {
+            if (*cur < *len) {                    /* drop the char at the caret */
+                memmove(buf + *cur, buf + *cur + 1, (size_t)(*len - *cur));
+                (*len)--;
+            }
+            return;
+        }
+        if (k >= 32 && k < 127 && *len < (int)sizeof s->commander_input - 1) {
+            memmove(buf + *cur + 1, buf + *cur, (size_t)(*len - *cur) + 1);
+            buf[*cur] = (char)k;                  /* insert at the caret */
+            (*cur)++; (*len)++;
         }
         return;
     }
@@ -4049,12 +4111,22 @@ static void render_commander(jbe_state_t *s) {
     /* The message row above the legend: a name prompt, a delete confirmation,
        or the last result. */
     if (s->commander_input_active) {
+        const char *label = s->commander_input_kind == 0 ? "New folder name:"
+                                                         : "Rename to:";
         char line[160];
-        snprintf(line, sizeof line, " %s %s_",
-                 s->commander_input_kind == 0 ? "New folder name:" : "Rename to:",
-                 s->commander_input);
+        snprintf(line, sizeof line, " %s %s", label, s->commander_input);
         jfc_clear_row(JFC_MSG_ROW, JBE_PROMPT_FG, JBE_PROMPT_BG);
         vga_print(JFC_MSG_ROW, JFC_LEFT + 2, line, JBE_PROMPT_FG, JBE_PROMPT_BG);
+        /* Block caret drawn in reverse video (yellow on black), like the editor
+           cursor: it sits on the character it would push right, or on a blank
+           cell just past the end of the text. Layout: leading space + label +
+           one space, then the field. */
+        int input_col = JFC_LEFT + 2 + 1 + (int)strlen(label) + 1;
+        int caret_col = input_col + s->commander_input_cur;
+        char cch = (s->commander_input_cur < s->commander_input_len)
+                   ? s->commander_input[s->commander_input_cur] : ' ';
+        if (caret_col < JFC_RIGHT)
+            vga_set_char(JFC_MSG_ROW, caret_col, cch, JBE_PROMPT_BG, JBE_PROMPT_FG);
     } else if (s->commander_confirm_delete) {
         ui_filelist_t *a = &s->commander_list[s->commander_pane];
         int tagged = 0;
