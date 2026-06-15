@@ -30,6 +30,43 @@ static bool make_fixture(const char *path, const char *content) {
     return ok;
 }
 
+/* Tracked git fixtures on A: that the tests must never leave altered:
+   scratch.txt is the editor's sandbox file and demo.z80 a syntax sample, both
+   committed. We snapshot their bytes at startup and rewrite them on exit, so a
+   stray delete/rename in any test (now or later) can never dirty the working
+   tree. Rewriting identical bytes is a no-op as far as git is concerned. */
+static struct { const char *path; char *data; int len; bool had; }
+    g_fixtures[] = { { "A:scratch.txt", NULL, 0, false },
+                     { "A:demo.z80",    NULL, 0, false } };
+
+static void fixtures_snapshot(void) {
+    for (size_t i = 0; i < sizeof g_fixtures / sizeof g_fixtures[0]; i++) {
+        japi_file_t f;
+        if (!japi_fopen(&f, g_fixtures[i].path, JAPI_READ)) continue;
+        int cap = 4096, len = 0; char *buf = malloc((size_t)cap);
+        for (;;) {
+            if (len == cap) { cap *= 2; buf = realloc(buf, (size_t)cap); }
+            int n = japi_fread(&f, buf + len, cap - len);
+            if (n <= 0) break;
+            len += n;
+        }
+        japi_fclose(&f);
+        g_fixtures[i].data = buf; g_fixtures[i].len = len; g_fixtures[i].had = true;
+    }
+}
+
+static void fixtures_restore(void) {
+    for (size_t i = 0; i < sizeof g_fixtures / sizeof g_fixtures[0]; i++) {
+        if (!g_fixtures[i].had) continue;
+        japi_file_t f;
+        if (japi_fopen(&f, g_fixtures[i].path, JAPI_WRITE)) {
+            japi_fwrite(&f, g_fixtures[i].data, g_fixtures[i].len);
+            japi_fclose(&f);
+        }
+        free(g_fixtures[i].data); g_fixtures[i].data = NULL;
+    }
+}
+
 /* Read a whole file into out[] as a NUL-terminated string. */
 static bool slurp(const char *path, char *out, int max) {
     japi_file_t f;
@@ -48,6 +85,10 @@ static void type_str(jbe_state_t *s, const char *text) {
 
 int main(void) {
     japi_init();
+
+    /* Protect the committed A: fixtures: snapshot now, restore on exit. */
+    fixtures_snapshot();
+    atexit(fixtures_restore);
 
     /* 5 lines, with a deliberately long 3rd line for horizontal scroll. */
     const char *FIXTURE =
