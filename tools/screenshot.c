@@ -192,6 +192,12 @@ int main(int argc, char **argv) {
         ed.help_active = true; ed.help_top = 0;   /* F1 help window overlay */
     } else if (helpmenu) {
         jbe_handle_key(&ed, JAPI_KEY_ALT('H'));    /* open the Help menu */
+    } else if (strcmp(scene, "commander") == 0) {
+        make_file("A:hello.bas",     "PRINT \"hi\"\n");
+        make_file("A:notes.txt",     "notes\n");
+        make_file("A:AZERTY_FR.kbd", "kbd\n");
+        make_file("C:readme.txt",    "readme\n");
+        jbe_handle_key(&ed, JAPI_KEY_CTRL('J'));    /* open the Japi Commander */
     }
 
     jbe_render(&ed);

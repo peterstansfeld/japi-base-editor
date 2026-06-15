@@ -345,7 +345,15 @@ typedef struct {
     bool           commander_active;
     int            commander_pane;       /* 0 = left, 1 = right */
     ui_filelist_t  commander_list[2];
-    char           commander_msg[80];    /* status line: copy result / error */
+    char           commander_msg[128];   /* status line: copy result / error */
+
+    /* Commander v1 file ops: a modal name prompt (mkdir / rename) and a delete
+       confirmation, both shown on the Commander's status row. */
+    bool           commander_input_active;
+    int            commander_input_kind;  /* 0 = mkdir, 1 = rename */
+    char           commander_input[80];
+    int            commander_input_len;
+    bool           commander_confirm_delete;
 
     /* F1 Help overlay (v2.0, in progress): a centred framed window that floats
        over the editor so the work behind it stays visible. help_top = scroll

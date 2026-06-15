@@ -3632,9 +3632,13 @@ static void cmd_join(char *out, int out_max, const char *cwd, const char *name) 
 }
 
 static void commander_open(jbe_state_t *s) {
-    s->commander_active = true;
-    s->commander_pane   = 0;
-    s->commander_msg[0] = 0;
+    s->commander_active         = true;
+    s->commander_pane           = 0;
+    s->commander_msg[0]         = 0;
+    s->commander_input_active   = false;
+    s->commander_confirm_delete = false;
+    s->commander_input_len      = 0;
+    s->commander_input[0]       = 0;
     for (int p = 0; p < 2; p++) {
         ui_filelist_t *w = &s->commander_list[p];
         ui_filelist_default_colors(w);
@@ -3645,60 +3649,184 @@ static void commander_open(jbe_state_t *s) {
     }
 }
 
-/* F5: copy the selected file in the active pane to the other pane's directory,
-   streamed in chunks so it is binary-safe (a .kbd is full of NUL bytes). */
-static void commander_copy(jbe_state_t *s) {
-    ui_filelist_t *src = &s->commander_list[s->commander_pane];
-    ui_filelist_t *dst = &s->commander_list[s->commander_pane ^ 1];
-    if (src->n_entries == 0) return;
-    const ui_filelist_entry_t *e = &src->entries[src->sel];
-    if (e->is_dir) {
-        snprintf(s->commander_msg, sizeof s->commander_msg,
-                 "Pick a file (not a folder) to copy");
-        return;
-    }
-    char spath[200], dpath[200];
-    cmd_join(spath, sizeof spath, src->cwd, e->name);
-    cmd_join(dpath, sizeof dpath, dst->cwd, e->name);
-    /* static: a japi_file_t embeds a ~550-byte FatFs FIL; two on the ~2 KB Core 0
-       stack would overflow it. The Commander copies one file at a time. */
+/* Stream-copy one file in chunks so it is binary-safe (a .kbd is full of NUL
+   bytes). Returns bytes copied, or -1 on error.
+   static buffers: a japi_file_t embeds a ~550-byte FatFs FIL; two on the ~2 KB
+   Core 0 stack would overflow it, so the Commander copies one file at a time. */
+static long cmd_copy_file(const char *spath, const char *dpath) {
     static japi_file_t fin, fout;
     static uint8_t     buf[512];
-    if (!japi_fopen(&fin, spath, JAPI_READ)) {
-        snprintf(s->commander_msg, sizeof s->commander_msg, "Cannot read %s", e->name);
-        return;
-    }
-    if (!japi_fopen(&fout, dpath, JAPI_WRITE)) {
-        japi_fclose(&fin);
-        snprintf(s->commander_msg, sizeof s->commander_msg, "Cannot write to %s", dst->cwd);
-        return;
-    }
-    int n, total = 0; bool ok = true;
+    if (!japi_fopen(&fin, spath, JAPI_READ))  return -1;
+    if (!japi_fopen(&fout, dpath, JAPI_WRITE)) { japi_fclose(&fin); return -1; }
+    long total = 0; bool ok = true; int n;
     while ((n = japi_fread(&fin, buf, (int)sizeof buf)) > 0) {
         if (japi_fwrite(&fout, buf, n) != n) { ok = false; break; }
         total += n;
     }
     japi_fclose(&fin);
     japi_fclose(&fout);
-    /* reload the destination pane so the new file shows up */
-    int keep = dst->sel;
-    ui_filelist_open(dst, dst->cwd, dst->view_row, dst->view_col, dst->view_h, dst->view_w);
-    if (keep < dst->n_entries) dst->sel = keep;
-    if (ok) snprintf(s->commander_msg, sizeof s->commander_msg,
-                     "Copied %s (%d bytes) to %s", e->name, total, dst->cwd);
+    return ok ? total : -1;
+}
+
+/* Reload a pane in place, keeping the selection on a valid row. */
+static void cmd_reload(ui_filelist_t *w) {
+    int keep = w->sel;
+    ui_filelist_open(w, w->cwd, w->view_row, w->view_col, w->view_h, w->view_w);
+    if (keep < w->n_entries)      w->sel = keep;
+    else if (w->n_entries > 0)    w->sel = w->n_entries - 1;
+}
+
+/* The selected entry in the active pane, or NULL; refuses folders with a message
+   (the platform has no rmdir/rename, so v1 operates on files only). */
+static const ui_filelist_entry_t *cmd_pick_file(jbe_state_t *s, const char *verb) {
+    ui_filelist_t *a = &s->commander_list[s->commander_pane];
+    if (a->n_entries == 0) return NULL;
+    const ui_filelist_entry_t *e = &a->entries[a->sel];
+    if (e->is_dir) {
+        snprintf(s->commander_msg, sizeof s->commander_msg,
+                 "Pick a file (not a folder) to %s", verb);
+        return NULL;
+    }
+    return e;
+}
+
+/* F5: copy the selected file to the other pane's directory. */
+static void commander_copy(jbe_state_t *s) {
+    const ui_filelist_entry_t *e = cmd_pick_file(s, "copy");
+    if (!e) return;
+    ui_filelist_t *src = &s->commander_list[s->commander_pane];
+    ui_filelist_t *dst = &s->commander_list[s->commander_pane ^ 1];
+    char name[UI_FILELIST_NAME_MAX + 1]; snprintf(name, sizeof name, "%s", e->name);
+    char spath[200], dpath[200];
+    cmd_join(spath, sizeof spath, src->cwd, name);
+    cmd_join(dpath, sizeof dpath, dst->cwd, name);
+    long total = cmd_copy_file(spath, dpath);
+    cmd_reload(dst);
+    if (total >= 0) snprintf(s->commander_msg, sizeof s->commander_msg,
+                             "Copied %s (%ld bytes)", name, total);
+    else            snprintf(s->commander_msg, sizeof s->commander_msg,
+                             "Copy of %s failed (disk full?)", name);
+}
+
+/* F6: move = copy to the other pane, then remove the original. */
+static void commander_move(jbe_state_t *s) {
+    const ui_filelist_entry_t *e = cmd_pick_file(s, "move");
+    if (!e) return;
+    ui_filelist_t *src = &s->commander_list[s->commander_pane];
+    ui_filelist_t *dst = &s->commander_list[s->commander_pane ^ 1];
+    char name[UI_FILELIST_NAME_MAX + 1]; snprintf(name, sizeof name, "%s", e->name);
+    char spath[200], dpath[200];
+    cmd_join(spath, sizeof spath, src->cwd, name);
+    cmd_join(dpath, sizeof dpath, dst->cwd, name);
+    long total = cmd_copy_file(spath, dpath);
+    if (total < 0) { cmd_reload(dst);
+        snprintf(s->commander_msg, sizeof s->commander_msg, "Move of %s failed", name); return; }
+    bool rm = japi_remove(spath);
+    cmd_reload(src); cmd_reload(dst);
+    if (rm) snprintf(s->commander_msg, sizeof s->commander_msg, "Moved %s", name);
     else    snprintf(s->commander_msg, sizeof s->commander_msg,
-                     "Copy of %s failed (disk full?)", e->name);
+                     "Copied %s but could not remove it", name);
+}
+
+/* F8 (confirmed): delete the selected file. */
+static void commander_delete(jbe_state_t *s) {
+    const ui_filelist_entry_t *e = cmd_pick_file(s, "delete");
+    if (!e) return;
+    ui_filelist_t *a = &s->commander_list[s->commander_pane];
+    char name[UI_FILELIST_NAME_MAX + 1]; snprintf(name, sizeof name, "%s", e->name);
+    char path[200]; cmd_join(path, sizeof path, a->cwd, name);
+    bool ok = japi_remove(path);
+    cmd_reload(a);
+    snprintf(s->commander_msg, sizeof s->commander_msg,
+             ok ? "Deleted %s" : "Could not delete %s", name);
+}
+
+/* F7 (after the name prompt): create a folder in the active pane. */
+static void commander_do_mkdir(jbe_state_t *s, const char *name) {
+    ui_filelist_t *a = &s->commander_list[s->commander_pane];
+    char path[200]; cmd_join(path, sizeof path, a->cwd, name);
+    bool ok = japi_mkdir(path);
+    cmd_reload(a);
+    snprintf(s->commander_msg, sizeof s->commander_msg,
+             ok ? "Created folder %s" : "Could not create %s", name);
+}
+
+/* F2 (after the name prompt): rename the selected file. The platform has no
+   rename, so copy to the new name in the same folder, then remove the old. */
+static void commander_do_rename(jbe_state_t *s, const char *newname) {
+    const ui_filelist_entry_t *e = cmd_pick_file(s, "rename");
+    if (!e) return;
+    ui_filelist_t *a = &s->commander_list[s->commander_pane];
+    char oldname[UI_FILELIST_NAME_MAX + 1]; snprintf(oldname, sizeof oldname, "%s", e->name);
+    char spath[200], dpath[200];
+    cmd_join(spath, sizeof spath, a->cwd, oldname);
+    cmd_join(dpath, sizeof dpath, a->cwd, newname);
+    long total = cmd_copy_file(spath, dpath);
+    if (total < 0) { cmd_reload(a);
+        snprintf(s->commander_msg, sizeof s->commander_msg, "Rename of %s failed", oldname); return; }
+    japi_remove(spath);
+    cmd_reload(a);
+    (void)oldname;
+    snprintf(s->commander_msg, sizeof s->commander_msg, "Renamed to %s", newname);
+}
+
+/* Open the modal name prompt (kind 0 = mkdir, 1 = rename, prefilled). */
+static void commander_prompt(jbe_state_t *s, int kind, const char *prefill) {
+    s->commander_input_active = true;
+    s->commander_input_kind   = kind;
+    s->commander_msg[0]       = 0;
+    snprintf(s->commander_input, sizeof s->commander_input, "%s", prefill ? prefill : "");
+    s->commander_input_len    = (int)strlen(s->commander_input);
 }
 
 static void commander_handle_key(jbe_state_t *s, uint16_t k) {
+    /* Modal name prompt for mkdir / rename. */
+    if (s->commander_input_active) {
+        if (k == JAPI_KEY_ESCAPE) { s->commander_input_active = false; return; }
+        if (k == JAPI_KEY_ENTER) {
+            s->commander_input_active = false;
+            if (s->commander_input_len > 0) {
+                if (s->commander_input_kind == 0) commander_do_mkdir(s, s->commander_input);
+                else                              commander_do_rename(s, s->commander_input);
+            }
+            return;
+        }
+        if (k == JAPI_KEY_BACKSPACE) {
+            if (s->commander_input_len > 0) s->commander_input[--s->commander_input_len] = 0;
+            return;
+        }
+        if (k >= 32 && k < 127 && s->commander_input_len < (int)sizeof s->commander_input - 1) {
+            s->commander_input[s->commander_input_len++] = (char)k;
+            s->commander_input[s->commander_input_len]   = 0;
+        }
+        return;
+    }
+    /* Delete confirmation: Y deletes, anything else cancels. */
+    if (s->commander_confirm_delete) {
+        s->commander_confirm_delete = false;
+        if (k == 'y' || k == 'Y') commander_delete(s);
+        return;
+    }
+
     if (k == JAPI_KEY_ESCAPE || k == JAPI_KEY_CTRL('J')) { s->commander_active = false; return; }
     if (k == JAPI_KEY_TAB) { s->commander_pane ^= 1; return; }   /* switch active pane */
-    if (k == JAPI_KEY_F5)  { commander_copy(s);      return; }   /* copy file */
+    if (k == JAPI_KEY_F5)  { commander_copy(s); return; }        /* copy */
+    if (k == JAPI_KEY_F6)  { commander_move(s); return; }        /* move */
+    if (k == JAPI_KEY_F7)  { commander_prompt(s, 0, ""); return; } /* new folder */
+    if (k == JAPI_KEY_F2)  {                                     /* rename (prefilled) */
+        const ui_filelist_entry_t *e = cmd_pick_file(s, "rename");
+        if (e) commander_prompt(s, 1, e->name);
+        return;
+    }
+    if (k == JAPI_KEY_F8 || k == JAPI_KEY_DELETE) {              /* delete (confirm) */
+        const ui_filelist_entry_t *e = cmd_pick_file(s, "delete");
+        if (e) { s->commander_confirm_delete = true; s->commander_msg[0] = 0; }
+        return;
+    }
     ui_filelist_t *act = &s->commander_list[s->commander_pane];
-    if (k == JAPI_KEY_CTAB)   { ui_filelist_key(act, JAPI_KEY_TAB); return; } /* switch drive */
-    if (k == JAPI_KEY_DELETE) return;   /* v0 is copy-only: ignore delete */
+    if (k == JAPI_KEY_CTAB) { ui_filelist_key(act, JAPI_KEY_TAB); return; } /* switch drive */
     /* Navigation (arrows, PgUp/PgDn, Home/End) and Enter (into folders) go to the
-       active pane; its own Esc/Tab/Delete were intercepted above. */
+       active pane; its own Esc/Tab were intercepted above. */
     ui_filelist_key(act, k);
 }
 
@@ -3732,13 +3860,30 @@ static void render_commander(jbe_state_t *s) {
         w->sel_fg = sf; w->sel_bg = sb;
     }
 
-    fill_row(VGA_ROWS - 1, VGA_BLACK, VGA_CYAN);
-    if (s->commander_msg[0])
-        vga_print(VGA_ROWS - 1, 2, s->commander_msg, VGA_BLACK, VGA_CYAN);
-    else
-        vga_print(VGA_ROWS - 1, 2,
-                  "Tab = switch pane   Ctrl+Tab = switch drive   F5 = copy   Esc = close",
-                  VGA_BLACK, VGA_CYAN);
+    if (s->commander_input_active) {
+        /* Name prompt (black on yellow, like the editor's input prompts). */
+        char line[140];
+        snprintf(line, sizeof line, " %s %s_",
+                 s->commander_input_kind == 0 ? "New folder name:" : "Rename to:",
+                 s->commander_input);
+        fill_row(VGA_ROWS - 1, JBE_PROMPT_FG, JBE_PROMPT_BG);
+        vga_print(VGA_ROWS - 1, 2, line, JBE_PROMPT_FG, JBE_PROMPT_BG);
+    } else if (s->commander_confirm_delete) {
+        ui_filelist_t *a = &s->commander_list[s->commander_pane];
+        char line[140];
+        snprintf(line, sizeof line, " Delete %s ?  Y = yes, any other key = no",
+                 a->n_entries ? a->entries[a->sel].name : "");
+        fill_row(VGA_ROWS - 1, JBE_PROMPT_FG, JBE_PROMPT_BG);
+        vga_print(VGA_ROWS - 1, 2, line, JBE_PROMPT_FG, JBE_PROMPT_BG);
+    } else {
+        fill_row(VGA_ROWS - 1, VGA_BLACK, VGA_CYAN);
+        if (s->commander_msg[0])
+            vga_print(VGA_ROWS - 1, 2, s->commander_msg, VGA_BLACK, VGA_CYAN);
+        else
+            vga_print(VGA_ROWS - 1, 2,
+              "F2 Ren  F5 Copy  F6 Move  F7 Mkdir  F8 Del   Tab pane  ^Tab drive  Esc close",
+              VGA_BLACK, VGA_CYAN);
+    }
 }
 
 /* ---- F1 Help: a centred, framed window that floats over the editor --------

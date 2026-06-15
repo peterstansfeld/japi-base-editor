@@ -1709,7 +1709,61 @@ int main(void) {
         jbe_handle_key(&e, JAPI_KEY_ESCAPE);
     }
 
-    if (fails == 0) { printf("PASS: JBE MVP step 1..5c + 10 + 11 + 12 + 13 + 14 + 15 + 16 + 17 + 18 + 19 + 20 (shortcuts+macro-menu) + tab-indent + file(saveas/close/delete) + 21 (F1 help)\n"); return 0; }
+    /* ----- step 22: Japi Commander file ops (mkdir / copy / delete) -------- */
+    {
+        jbe_state_t e;
+        jbe_init(&e);
+        CHECK(make_fixture("A:cz.txt", "hello"), "write commander fixture");
+        CHECK(jbe_load(&e, "A:cz.txt"), "load commander fixture");
+
+        jbe_handle_key(&e, JAPI_KEY_CTRL('J'));
+        CHECK(e.commander_active, "Ctrl+J opens the Commander");
+
+        /* F7 = new folder: prompt, type a name, Enter creates it on A:. */
+        jbe_handle_key(&e, JAPI_KEY_F7);
+        CHECK(e.commander_input_active && e.commander_input_kind == 0,
+              "F7 opens the new-folder prompt");
+        const char *nm = "tdir";
+        for (int i = 0; nm[i]; i++) jbe_handle_key(&e, (uint16_t)nm[i]);
+        CHECK(e.commander_input_len == 4, "typed the folder name");
+        jbe_handle_key(&e, JAPI_KEY_ENTER);
+        CHECK(!e.commander_input_active, "Enter closes the prompt");
+        { japi_dir_t d; CHECK(japi_opendir(&d, "A:tdir"), "F7 created the folder"); }
+
+        /* Esc cancels the prompt without acting. */
+        jbe_handle_key(&e, JAPI_KEY_F7);
+        jbe_handle_key(&e, 'z');
+        jbe_handle_key(&e, JAPI_KEY_ESCAPE);
+        CHECK(!e.commander_input_active, "Esc cancels the prompt");
+
+        /* Select cz.txt in the A: pane, F5 copies it to C:. */
+        ui_filelist_t *a = &e.commander_list[0];
+        for (int g = 0; g < a->n_entries &&
+             strcmp(a->entries[a->sel].name, "cz.txt") != 0; g++)
+            jbe_handle_key(&e, JAPI_KEY_DOWN);
+        CHECK(strcmp(a->entries[a->sel].name, "cz.txt") == 0, "selected cz.txt in A:");
+        japi_remove("C:cz.txt");
+        jbe_handle_key(&e, JAPI_KEY_F5);
+        {
+            japi_file_t f;
+            bool ok = japi_fopen(&f, "C:cz.txt", JAPI_READ);
+            if (ok) japi_fclose(&f);
+            CHECK(ok, "F5 copied cz.txt to C:");
+        }
+
+        /* F8 asks to confirm; Y deletes it from A:. */
+        jbe_handle_key(&e, JAPI_KEY_F8);
+        CHECK(e.commander_confirm_delete, "F8 asks to confirm a delete");
+        jbe_handle_key(&e, 'Y');
+        {
+            japi_file_t f;
+            bool gone = !japi_fopen(&f, "A:cz.txt", JAPI_READ);
+            if (!gone) japi_fclose(&f);
+            CHECK(gone, "delete removed A:cz.txt");
+        }
+    }
+
+    if (fails == 0) { printf("PASS: JBE MVP step 1..5c + 10 + 11 + 12 + 13 + 14 + 15 + 16 + 17 + 18 + 19 + 20 (shortcuts+macro-menu) + tab-indent + file(saveas/close/delete) + 21 (F1 help) + 22 (commander ops)\n"); return 0; }
     printf("%d check(s) failed\n", fails);
     return 1;
 }
