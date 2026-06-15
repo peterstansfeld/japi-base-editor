@@ -3750,7 +3750,9 @@ static const ui_filelist_entry_t *cmd_pick_file(jbe_state_t *s, const char *verb
 }
 
 /* The files to act on: every tagged file, or the current one if none are
-   tagged. Folders and ".." are skipped. Returns the count. */
+   tagged. Folders and ".." are skipped. Returns the count. Pass names == NULL
+   to count only -- this avoids forcing the caller to reserve a names buffer
+   (2 KB) on the RP2350 core-0 stack just to find out how many files match. */
 static int commander_collect(jbe_state_t *s,
                              char names[][UI_FILELIST_NAME_MAX + 1], int max) {
     ui_filelist_t *a = &s->commander_list[s->commander_pane];
@@ -3758,10 +3760,13 @@ static int commander_collect(jbe_state_t *s,
     for (int i = 0; i < a->n_entries; i++) if (a->entries[i].tagged) any = 1;
     if (any) {
         for (int i = 0; i < a->n_entries && n < max; i++)
-            if (a->entries[i].tagged && !a->entries[i].is_dir)
-                snprintf(names[n++], UI_FILELIST_NAME_MAX + 1, "%s", a->entries[i].name);
+            if (a->entries[i].tagged && !a->entries[i].is_dir) {
+                if (names) snprintf(names[n], UI_FILELIST_NAME_MAX + 1, "%s", a->entries[i].name);
+                n++;
+            }
     } else if (a->n_entries > 0 && !a->entries[a->sel].is_dir) {
-        snprintf(names[n++], UI_FILELIST_NAME_MAX + 1, "%s", a->entries[a->sel].name);
+        if (names) snprintf(names[n], UI_FILELIST_NAME_MAX + 1, "%s", a->entries[a->sel].name);
+        n++;
     }
     return n;
 }
@@ -3804,7 +3809,10 @@ static void commander_paste(jbe_state_t *s) {
 
 /* Delete (confirmed): remove the tagged-or-current files. */
 static void commander_delete(jbe_state_t *s) {
-    char names[JBE_CLIP_MAX][UI_FILELIST_NAME_MAX + 1];
+    /* Static, not on the stack: this 2 KB array would overflow the RP2350
+       core-0 stack (~2 KB) and hang the machine. The Commander is modal and
+       runs only on core 0, so a single shared buffer is safe. */
+    static char names[JBE_CLIP_MAX][UI_FILELIST_NAME_MAX + 1];
     int n = commander_collect(s, names, JBE_CLIP_MAX);
     ui_filelist_t *a = &s->commander_list[s->commander_pane];
     int ok = 0;
@@ -3925,8 +3933,9 @@ static void commander_handle_key(jbe_state_t *s, uint16_t k) {
     }
     if (k == JAPI_KEY_F7) { commander_prompt(s, 0, ""); return; }        /* new folder */
     if (k == JAPI_KEY_DELETE) {                                          /* delete (confirm) */
-        char tmp[JBE_CLIP_MAX][UI_FILELIST_NAME_MAX + 1];
-        if (commander_collect(s, tmp, JBE_CLIP_MAX) > 0)
+        /* Count only (NULL names) -- no need to reserve a 2 KB names buffer on
+           the core-0 stack just to decide whether to raise the prompt. */
+        if (commander_collect(s, NULL, JBE_CLIP_MAX) > 0)
             { s->commander_confirm_delete = true; s->commander_msg[0] = 0; }
         return;
     }
