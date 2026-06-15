@@ -1607,6 +1607,41 @@ int main(void) {
         jbe_free(&s);
     }
 
+    /* ----- Go to Line (Ctrl+L) --------------------------------------- */
+    {
+        jbe_state_t s; jbe_init(&s);
+        CHECK(make_fixture("A:_gl.txt", "L1\nL2\nL3\nL4\nL5\n"),    "goto: seed");
+        CHECK(jbe_load(&s, "A:_gl.txt"),                           "goto: load");
+
+        /* Ctrl+L opens the prompt; typing "3" + Enter jumps to line 3 (row 2). */
+        jbe_handle_key(&s, JAPI_KEY_CTRL('L'));
+        CHECK(s.goto_active,                                       "goto: Ctrl+L opens the prompt");
+        jbe_handle_key(&s, '3');
+        jbe_handle_key(&s, JAPI_KEY_ENTER);
+        CHECK(!s.goto_active && JBE_PANE(&s)->cur_row == 2 && JBE_PANE(&s)->cur_col == 0,
+              "goto: jumps to the 1-based line");
+
+        /* Only digits are accepted; a letter is ignored. */
+        jbe_handle_key(&s, JAPI_KEY_CTRL('L'));
+        jbe_handle_key(&s, 'x');
+        CHECK(s.goto_len == 0,                                     "goto: non-digit ignored");
+
+        /* An out-of-range number clamps to the last line. */
+        jbe_handle_key(&s, '9'); jbe_handle_key(&s, '9');
+        jbe_handle_key(&s, JAPI_KEY_ENTER);
+        CHECK(JBE_PANE(&s)->cur_row == JBE_BUF(&s)->n_lines - 1,    "goto: clamps past end to last line");
+
+        /* Esc cancels without moving. */
+        JBE_PANE(&s)->cur_row = 1;
+        jbe_handle_key(&s, JAPI_KEY_CTRL('L'));
+        jbe_handle_key(&s, '5');
+        jbe_handle_key(&s, JAPI_KEY_ESCAPE);
+        CHECK(!s.goto_active && JBE_PANE(&s)->cur_row == 1,         "goto: Esc cancels, cursor unmoved");
+
+        japi_remove("A:_gl.txt");
+        jbe_free(&s);
+    }
+
     /* ----- File: Save As + Save-on-untitled (the New->Save bug) ------- */
     {
         jbe_state_t s; jbe_init(&s);
@@ -1906,7 +1941,7 @@ int main(void) {
         }
     }
 
-    if (fails == 0) { printf("PASS: JBE MVP step 1..5c + 10 + 11 + 12 + 13 + 14 + 15 + 16 + 17 + 18 + 19 + 20 (shortcuts+macro-menu) + tab-indent + auto-indent + file(saveas/close/delete) + 21 (F1 help) + 22 (commander ops)\n"); return 0; }
+    if (fails == 0) { printf("PASS: JBE MVP step 1..5c + 10 + 11 + 12 + 13 + 14 + 15 + 16 + 17 + 18 + 19 + 20 (shortcuts+macro-menu) + tab-indent + auto-indent + goto-line + file(saveas/close/delete) + 21 (F1 help) + 22 (commander ops)\n"); return 0; }
     printf("%d check(s) failed\n", fails);
     return 1;
 }

@@ -1383,8 +1383,9 @@ static const menu_item_t MENU_EDIT[]    = {
     {0,0,0}
 };
 static const menu_item_t MENU_SEARCH[]  = {
-    {"Find...",    'F', "Ctrl+F"},
-    {"Replace...", 'R', "Ctrl+R"},
+    {"Find...",      'F', "Ctrl+F"},
+    {"Replace...",   'R', "Ctrl+R"},
+    {"Go to Line...",'G', "Ctrl+L"},
     {0,0,0}
 };
 /* Macro menu: explicit entries so a menu = capability inventory. Record
@@ -1736,6 +1737,45 @@ static void replace_open(jbe_state_t *s) {
     JBE_PANE(s)->replace_phase    = 0;
     JBE_PANE(s)->replace_with_len = 0;
     JBE_PANE(s)->replace_with[0]  = 0;
+}
+
+/* --- Go to Line (Ctrl+L) -------------------------------------------- */
+
+static void goto_open(jbe_state_t *s) {
+    s->goto_active = true;
+    s->goto_len    = 0;
+    s->goto_buf[0] = 0;
+}
+
+/* Parse the typed line number (1-based) and jump the active pane's cursor to
+   that row, clamped to the document. An empty input just closes the prompt. */
+static void goto_commit(jbe_state_t *s) {
+    s->goto_active = false;
+    if (s->goto_len == 0) return;
+    long n = strtol(s->goto_buf, NULL, 10);
+    if (n < 1) n = 1;
+    if (n > JBE_BUF(s)->n_lines) n = JBE_BUF(s)->n_lines;
+    JBE_PANE(s)->cur_row = (int)n - 1;
+    JBE_PANE(s)->cur_col = 0;
+    JBE_PANE(s)->sel_active = false;
+    jbe_follow_cursor(s);
+}
+
+/* Routes a keystroke while the Go to Line prompt is open: digits only. */
+static void goto_route_key(jbe_state_t *s, uint16_t k) {
+    switch (k) {
+        case JAPI_KEY_ESCAPE: s->goto_active = false; return;
+        case JAPI_KEY_ENTER:  goto_commit(s);         return;
+        case JAPI_KEY_BACKSPACE:
+            if (s->goto_len > 0) s->goto_buf[--s->goto_len] = 0;
+            return;
+        default:
+            if (k >= '0' && k <= '9' && s->goto_len < (int)sizeof s->goto_buf - 1) {
+                s->goto_buf[s->goto_len++] = (char)k;
+                s->goto_buf[s->goto_len]   = 0;
+            }
+            return;
+    }
 }
 
 /* Replace the current match in place, pushing two undo records (a DELETE of the
@@ -2210,6 +2250,7 @@ static void menu_activate(jbe_state_t *s) {
         case 3: /* Search */
             if      (i == 0) find_open(s);
             else if (i == 1) replace_open(s);
+            else if (i == 2) goto_open(s);
             break;
         case 4: /* Macro */
             if      (i == 0) macro_toggle_record(s);
@@ -2345,6 +2386,12 @@ void jbe_handle_key(jbe_state_t *s, uint16_t k) {
     /* Save As filename prompt: swallows keys until Enter saves or Esc cancels. */
     if (s->save_as_active) {
         save_as_route_key(s, k);
+        return;
+    }
+
+    /* Go to Line prompt: swallows keys until Enter jumps or Esc cancels. */
+    if (s->goto_active) {
+        goto_route_key(s, k);
         return;
     }
 
@@ -2490,6 +2537,7 @@ void jbe_handle_key(jbe_state_t *s, uint16_t k) {
     /* Ctrl+F / Ctrl+R outside any search mode open them. */
     if (k == JAPI_KEY_CTRL('F')) { find_open(s);    return; }
     if (k == JAPI_KEY_CTRL('R')) { replace_open(s); return; }
+    if (k == JAPI_KEY_CTRL('L')) { goto_open(s);    return; }
 
     /* Macro shortcuts. Ctrl+T = Record start/stop; Ctrl+P = Play. (Ctrl+M cannot
        be used: the keyboard layer maps it to Enter.) */
@@ -3665,6 +3713,16 @@ static void render_saveas_box(jbe_state_t *s) {
     if (s->caret_on && caret <= inr) vga_set_char(row1, caret, '_', FG, BG);
 }
 
+/* Search→Go to Line prompt: a framed box with the line number being typed. */
+static void render_goto_box(jbe_state_t *s) {
+    const uint8_t FG = JBE_PROMPT_FG, BG = JBE_PROMPT_BG;
+    const int inr = VGA_COLS - 2;
+    int row1 = draw_prompt_box(3, " Go to Line   Enter to jump, Esc to cancel ");
+    box_text(row1, 2, s->goto_buf, inr, FG, BG);
+    int caret = 2 + s->goto_len;
+    if (s->caret_on && caret <= inr) vga_set_char(row1, caret, '_', FG, BG);
+}
+
 /* Shared "unsaved changes" confirmation for Close / un-split / New / Open. */
 static void render_confirm_box(jbe_state_t *s) {
     const uint8_t FG = JBE_PROMPT_FG, BG = JBE_PROMPT_BG;
@@ -4308,6 +4366,8 @@ void jbe_render(const jbe_state_t *cs) {
         render_search_box(s);
     else if (s->save_as_active)
         render_saveas_box(s);
+    else if (s->goto_active)
+        render_goto_box(s);
     else if (s->close_confirm)
         render_confirm_box(s);
 

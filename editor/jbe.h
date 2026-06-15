@@ -388,6 +388,12 @@ typedef struct {
     int  save_as_len;
     char save_as_name[JBE_PATH_MAX + 1];
 
+    /* Search→Go to Line (Ctrl+L): when goto_active the status row prompts for a
+       line number. Enter jumps the active pane's cursor there; Esc cancels. */
+    bool goto_active;
+    int  goto_len;
+    char goto_buf[12];          /* the digits being typed, NUL-terminated */
+
     /* File→Close: empty the active pane (it falls back to a fresh untitled
        document; the pane itself never disappears). close_request is consumed
        by the embedding loop, which calls jbe_close_active(). close_confirm is
