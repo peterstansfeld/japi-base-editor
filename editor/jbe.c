@@ -714,6 +714,9 @@ static void edit_insert_char(jbe_state_t *s, char ch) {
     JBE_BUF(s)->dirty = true;
 }
 
+static void line_insert_bytes(jbe_state_t *s, int row, int col,
+                              const char *src, int n);   /* defined below */
+
 /* Split current line at cursor; rest becomes a new line below.
  * Pushes SPLIT onto the undo stack. */
 static void edit_newline(jbe_state_t *s) {
@@ -728,6 +731,26 @@ static void edit_newline(jbe_state_t *s) {
     (void)line_set_len(s, row, col);   /* best-effort shrink */
     undo_push(s, JBE_UNDO_SPLIT, row, col, NULL, 0, row, col, false);
     JBE_PANE(s)->cur_row++; JBE_PANE(s)->cur_col = 0;
+
+    /* Auto-indent: start the new line with the same leading whitespace as the
+       line we just left, so code keeps its indentation. The source is the now
+       truncated line[row], so splitting *inside* the indentation never copies
+       more than what sat before the cursor. Pushed as its own INSERT record:
+       one Ctrl+Z drops the indent, a second rejoins the line. */
+    {
+        const char *prev = JBE_BUF(s)->lines[row];
+        int ind = 0;
+        while (ind < JBE_BUF(s)->len[row] && (prev[ind] == ' ' || prev[ind] == '\t')) ind++;
+        if (ind > 0) {
+            line_insert_bytes(s, row + 1, 0, prev, ind);     /* copies the bytes */
+            char *t = malloc((size_t)ind);
+            if (t) {
+                memcpy(t, JBE_BUF(s)->lines[row], (size_t)ind);
+                undo_push(s, JBE_UNDO_INSERT, row + 1, 0, t, ind, row + 1, 0, false);
+            }
+            JBE_PANE(s)->cur_col = ind;
+        }
+    }
     JBE_BUF(s)->dirty = true;
 }
 

@@ -1577,6 +1577,36 @@ int main(void) {
         jbe_free(&s);
     }
 
+    /* ----- Auto-indent on Enter -------------------------------------- */
+    {
+        jbe_state_t s; jbe_init(&s);
+        CHECK(make_fixture("A:_ai.txt", "    indented\nflush\n"),  "autoindent: seed");
+        CHECK(jbe_load(&s, "A:_ai.txt"),                           "autoindent: load");
+
+        /* Enter at the end of a 4-space-indented line: the new line inherits
+           the 4 spaces and the cursor lands just past them. */
+        JBE_PANE(&s)->cur_row = 0; JBE_PANE(&s)->cur_col = JBE_BUF(&s)->len[0];
+        jbe_handle_key(&s, JAPI_KEY_ENTER);
+        CHECK(strcmp(JBE_BUF(&s)->lines[1], "    ") == 0,          "autoindent: new line gets 4 spaces");
+        CHECK(JBE_PANE(&s)->cur_row == 1 && JBE_PANE(&s)->cur_col == 4,
+              "autoindent: cursor sits after the inherited indent");
+
+        /* Undo: first Ctrl+Z drops the indent, second rejoins the split. */
+        jbe_handle_key(&s, JAPI_KEY_CTRL('Z'));
+        CHECK(strcmp(JBE_BUF(&s)->lines[1], "") == 0,              "autoindent: undo removes the indent");
+        jbe_handle_key(&s, JAPI_KEY_CTRL('Z'));
+        CHECK(JBE_BUF(&s)->n_lines == 2 &&
+              strcmp(JBE_BUF(&s)->lines[0], "    indented") == 0,  "autoindent: undo rejoins the line");
+
+        /* A flush (non-indented) line adds no indent. */
+        JBE_PANE(&s)->cur_row = 1; JBE_PANE(&s)->cur_col = JBE_BUF(&s)->len[1];
+        jbe_handle_key(&s, JAPI_KEY_ENTER);
+        CHECK(JBE_PANE(&s)->cur_col == 0,                          "autoindent: flush line stays at col 0");
+
+        japi_remove("A:_ai.txt");
+        jbe_free(&s);
+    }
+
     /* ----- File: Save As + Save-on-untitled (the New->Save bug) ------- */
     {
         jbe_state_t s; jbe_init(&s);
@@ -1876,7 +1906,7 @@ int main(void) {
         }
     }
 
-    if (fails == 0) { printf("PASS: JBE MVP step 1..5c + 10 + 11 + 12 + 13 + 14 + 15 + 16 + 17 + 18 + 19 + 20 (shortcuts+macro-menu) + tab-indent + file(saveas/close/delete) + 21 (F1 help) + 22 (commander ops)\n"); return 0; }
+    if (fails == 0) { printf("PASS: JBE MVP step 1..5c + 10 + 11 + 12 + 13 + 14 + 15 + 16 + 17 + 18 + 19 + 20 (shortcuts+macro-menu) + tab-indent + auto-indent + file(saveas/close/delete) + 21 (F1 help) + 22 (commander ops)\n"); return 0; }
     printf("%d check(s) failed\n", fails);
     return 1;
 }
