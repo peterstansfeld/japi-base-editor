@@ -6,16 +6,21 @@ editor source that runs on the Raspberry Pi Pico 2 compiles and runs here, so
 you can develop and test without flashing anything.
 
 The simulator itself is **not** in this repo — it is part of the platform and
-lives in the [Japi Base repository](https://github.com/JanFromBelgium/japi-base)
+lives in the [JapiBase repository](https://github.com/JanFromBelgium/JapiBase)
 under `sim/`. The `Makefile` here just links the editor component against that
 simulator (`japi_sim.c`) plus the platform headers. It expects JapiBase checked
-out next to this repo:
+out next to this repo, with exactly these folder names:
 
 ```
 parent/
   JapiBase/          # the platform: japi_base.h + sim/japi_sim.c
   JapiBaseEditor/    # this repo
 ```
+
+## Quick start
+
+From a fresh clone of the editor, **`./setup.sh`** clones the platform as the
+sibling `JapiBase` and builds + tests in one step — no manual cloning needed.
 
 ## Build and run
 

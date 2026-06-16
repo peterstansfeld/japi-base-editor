@@ -36,16 +36,32 @@ anything that will not exist on the Pico.
 ## Build and run it yourself
 
 You can run the editor on your own Linux machine in a minute, no hardware
-needed. All you need is `gcc`. Check out the platform next to this repo (the
-build links against its simulator) and run `make`:
+needed. All you need is `gcc` and `git`.
+
+The quickest way — clone this repo and let the setup script fetch the platform
+and build + test in one go:
 
 ```sh
-git clone https://github.com/JanFromBelgium/japi-base.git
-git clone https://github.com/JanFromBelgium/japi-base-editor.git
-cd japi-base-editor/sim
+git clone https://github.com/JanFromBelgium/JapiBaseEditor.git
+cd JapiBaseEditor
+./sim/setup.sh           # clones JapiBase as a sibling, builds, runs the tests
+cd sim && ./jbe A:scratch.txt
+```
+
+Or do it by hand — check out the platform next to this repo (the build links
+against its simulator) and run `make`:
+
+```sh
+git clone https://github.com/JanFromBelgium/JapiBase.git
+git clone https://github.com/JanFromBelgium/JapiBaseEditor.git
+cd JapiBaseEditor/sim
 make jbe                 # build the editor on the host simulator
 ./jbe A:scratch.txt      # open a file (drive letter + path, like on the device)
 ```
+
+The folder names matter: the build expects the platform at `../../JapiBase`, so
+keep the two repos named `JapiBase` and `JapiBaseEditor` side by side (cloning
+the URLs above does exactly that).
 
 `make demo` builds and opens a sample file, `make test` runs the test suite.
 The terminal needs to be at least 127×64 characters. See
