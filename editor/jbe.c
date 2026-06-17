@@ -2953,16 +2953,40 @@ static const char *const MMBASIC_KEYWORDS[] = {
     /* I/O — terminal */
     "PRINT","INPUT","LINE","WRITE","CLS","COLOUR","COLOR","FONT","LOCATE",
     /* I/O — files */
-    "OPEN","CLOSE","EOF","LOF","FILE","FILES","KILL","MKDIR","RMDIR","NAME","SEEK","CHDIR","RENAME",
-    /* Functions / operators (textual) */
+    "OPEN","CLOSE","FILE","FILES","KILL","MKDIR","RMDIR","NAME","SEEK","CHDIR","RENAME",
+    /* Operators (textual) */
     "AND","OR","XOR","NOT","MOD","DIV",
     /* Bitmap graphics (Japi Base) */
-    "GRAPHICS","PIXEL","BOX","CIRCLE","RGB","LINE","TRIANGLE","RBOX","ARC","MAP",
+    "GRAPHICS","PIXEL","BOX","CIRCLE","LINE","TRIANGLE","RBOX","ARC","MAP",
     /* peripheral keywords */
     "PIN","SETPIN","PULSIN","PWM","SERVO","TIMER","PAUSE",
     "SPI","I2C","UART","COM","PORT","SOUND","PLAY","TONE",
     /* Misc commands */
     "RUN","STOP","CONT","NEW","LIST","SAVE","LOAD","CHAIN","ERROR","OPTION",
+    /* JBB statements + declare-first type words */
+    "CURSOR","CONTINUE","RANDOMIZE","QUIT","EDIT","SETTITLE","MEMORY","CLEAR",
+    "TRACE","TRON","TROFF","BIT","BYTE","AS","INTEGER","FLOAT","STRING",
+    "OUTPUT","APPEND","PRESERVE",
+    0
+};
+
+/* JBB built-in functions -- highlighted in their own colour (color_directive),
+   so they read distinctly from commands/keywords. */
+static const char *const MMBASIC_FUNCTIONS[] = {
+    /* math */
+    "ABS","ACOS","ASIN","ATN","ATAN2","ATAN3","COS","COSH","SIN","SINH","TAN","TANH",
+    "EXP","LOG","LOG10","SQR","PI","DEG","RAD","FIX","INT","CINT","SGN","MAX","MIN","RND","CHOICE",
+    /* strings */
+    "LEN","ASC","CHR$","LEFT$","RIGHT$","MID$","INSTR","UCASE$","LCASE$","TRIM$",
+    "SPACE$","STRING$","FORMAT$","FIELD$",
+    /* conversion / bits / colour */
+    "VAL","STR$","HEX$","OCT$","BIN$","BIN2STR$","STR2BIN","RGB",
+    /* date / time */
+    "DATE$","TIME$","NOW","DATETIME$","EPOCH","DAY$",
+    /* arrays / files / console */
+    "BOUND","EOF","LOF","LOC","INPUT$","DIR$","CWD$","INKEY$","POS",
+    /* longstring / advanced */
+    "LLEN","LGETBYTE","LGETSTR$","LINSTR","EVAL",
     0
 };
 static const char *const MMBASIC_EXTENSIONS[] = { ".bas", ".mmb", 0 };
@@ -2972,13 +2996,13 @@ static const jbe_syn_scheme_t MMBASIC_SCHEME = {
     .flavor          = JBE_SYN_FLAVOR_BASIC,
     .extensions      = MMBASIC_EXTENSIONS,
     .keywords        = MMBASIC_KEYWORDS,
-    .directives      = 0,           /* unused for BASIC */
+    .directives      = MMBASIC_FUNCTIONS,  /* built-in functions, own colour */
     .registers       = 0,           /* unused for BASIC */
     .comment_chars   = "'",         /* REM is matched as a keyword */
     .color_default   = JBE_FG,      /* white */
-    .color_keyword   = 0x0F,        /* VGA_CYAN — same family as Z80 directives */
+    .color_keyword   = 0x0F,        /* VGA_CYAN — commands / keywords */
     .color_register  = VGA_WHITE,   /* unused */
-    .color_directive = VGA_WHITE,   /* unused */
+    .color_directive = 0x38,        /* soft orange — built-in functions */
     .color_number    = VGA_YELLOW,
     .color_string    = VGA_MAGENTA,  /* magenta for quoted strings */
     .color_comment   = VGA_GREEN,
@@ -3419,6 +3443,10 @@ static void basic_colour_line(const jbe_syn_scheme_t *scheme,
             }
             if (word_in_list_ci(line, start, i, scheme->keywords)) {
                 for (int k = start; k < i; k++) fg_out[k] = scheme->color_keyword;
+            } else if (word_in_list_ci(line, start, i, scheme->directives)) {
+                /* BASIC uses the directives slot for built-in functions, so they
+                   get their own colour (color_directive) distinct from commands. */
+                for (int k = start; k < i; k++) fg_out[k] = scheme->color_directive;
             }
             continue;
         }
