@@ -364,6 +364,15 @@ typedef struct {
     int            clip_n;
     bool           clip_cut;                                 /* false=copy, true=move */
 
+    /* Resumable paste with per-clash overwrite confirmation. When a destination
+       name already exists, the paste pauses (commander_confirm_overwrite) and the
+       key handler answers Y (this one) / N (skip) / A (all), then resumes from
+       commander_paste_idx. commander_paste_done tallies successes for the result. */
+    bool           commander_confirm_overwrite;
+    bool           commander_overwrite_all;
+    int            commander_paste_idx;
+    int            commander_paste_done;
+
     /* Options -> CPU speed: a small floating chooser (260 / 324 / 390 MHz). */
     int            cpu_item_index;     /* row of "CPU speed..." in the Options menu */
     bool           cpu_dialog_active;

@@ -3968,6 +3968,74 @@ static long cmd_copy_file(const char *spath, const char *dpath) {
     return ok ? total : -1;
 }
 
+/* True if `path` is a directory (probe by trying to open it as one). */
+static bool cmd_is_dir(const char *path) {
+    japi_dir_t probe;
+    if (!japi_opendir(&probe, path)) return false;
+    japi_closedir(&probe);
+    return true;
+}
+
+/* Recursive directory copy / delete for the Commander.
+   Depth is capped at CMD_MAX_DEPTH and the path at UI_FILELIST_PATH_MAX, which
+   keeps two things bounded: (1) the core-0 stack (one japi_dir_t ~60 B + a couple
+   of path buffers per level), and (2) FatFs's open-object table (FF_FS_LOCK = 16):
+   the open-directory chain is one handle per level, plus at most two transient
+   file handles during a copy, so ~depth+2 -- well under 16 at depth 10. Trees
+   deeper than the cap (or a path longer than the limit) make that branch fail
+   gracefully rather than crash/hang. */
+#define CMD_MAX_DEPTH 10
+#define CMD_TREE_PATH 256          /* child-path buffer; longer paths are refused */
+
+/* True if joining dir+name fits in a CMD_TREE_PATH buffer (no silent truncation). */
+static bool cmd_path_fits(const char *dir, const char *name) {
+    return (int)strlen(dir) + 1 + (int)strlen(name) < CMD_TREE_PATH;
+}
+
+static bool cmd_copy_tree(const char *src, const char *dst, int depth) {
+    if (depth > CMD_MAX_DEPTH) return false;
+    japi_mkdir(dst);                       /* create the destination dir (ok if it exists) */
+    japi_dir_t d;
+    if (!japi_opendir(&d, src)) return false;
+    char name[UI_FILELIST_NAME_MAX + 1];
+    bool ok = true;
+    while (japi_readdir(&d, name, (int)sizeof name)) {
+        if (!cmd_path_fits(src, name) || !cmd_path_fits(dst, name)) { ok = false; continue; }
+        char cs[CMD_TREE_PATH], cd[CMD_TREE_PATH];
+        cmd_join(cs, sizeof cs, src, name);
+        cmd_join(cd, sizeof cd, dst, name);
+        if (cmd_is_dir(cs)) { if (!cmd_copy_tree(cs, cd, depth + 1)) ok = false; }
+        else                { if (cmd_copy_file(cs, cd) < 0)        ok = false; }
+    }
+    japi_closedir(&d);
+    return ok;
+}
+
+static bool cmd_remove_tree(const char *path, int depth) {
+    if (depth > CMD_MAX_DEPTH) return false;
+    japi_dir_t d;
+    if (japi_opendir(&d, path)) {
+        char name[UI_FILELIST_NAME_MAX + 1];
+        while (japi_readdir(&d, name, (int)sizeof name)) {
+            if (!cmd_path_fits(path, name)) continue;
+            char child[CMD_TREE_PATH];
+            cmd_join(child, sizeof child, path, name);
+            if (cmd_is_dir(child)) cmd_remove_tree(child, depth + 1);
+            else                   japi_remove(child);
+        }
+        japi_closedir(&d);
+    }
+    return japi_rmdir(path);                /* drop the now-empty directory */
+}
+
+/* True if `child` is the same path as `parent` or lies inside its subtree --
+   used to refuse pasting/moving a folder into itself or its own descendant. */
+static bool cmd_path_within(const char *parent, const char *child) {
+    int n = (int)strlen(parent);
+    if (strncmp(parent, child, (size_t)n) != 0) return false;
+    return child[n] == '\0' || child[n] == '/' || child[n] == ':';
+}
+
 /* Reload a pane in place, keeping the selection on a valid row. */
 static void cmd_reload(ui_filelist_t *w) {
     int keep = w->sel;
@@ -3976,15 +4044,14 @@ static void cmd_reload(ui_filelist_t *w) {
     else if (w->n_entries > 0)    w->sel = w->n_entries - 1;
 }
 
-/* The selected entry in the active pane, or NULL; refuses folders with a message
-   (the platform has no rmdir/rename, so v1 operates on files only). */
+/* The selected entry in the active pane, or NULL; refuses only ".." (a file or a
+   folder can both be renamed now that the platform has japi_rename). */
 static const ui_filelist_entry_t *cmd_pick_file(jbe_state_t *s, const char *verb) {
     ui_filelist_t *a = &s->commander_list[s->commander_pane];
     if (a->n_entries == 0) return NULL;
     const ui_filelist_entry_t *e = &a->entries[a->sel];
-    if (e->is_dir) {
-        snprintf(s->commander_msg, sizeof s->commander_msg,
-                 "Pick a file (not a folder) to %s", verb);
+    if (strcmp(e->name, "..") == 0) {
+        snprintf(s->commander_msg, sizeof s->commander_msg, "Cannot %s \"..\"", verb);
         return NULL;
     }
     return e;
@@ -3995,11 +4062,10 @@ static const ui_filelist_entry_t *cmd_pick_file(jbe_state_t *s, const char *verb
    count only -- this avoids forcing the caller to reserve a names buffer
    (2 KB) on the RP2350 core-0 stack just to find out how many files match.
 
-   with_dirs lets the single-current-entry case also pick a folder, which is
-   what Delete wants (japi_remove drops an empty directory just fine). Copy/cut
-   pass false because cmd_copy_file only knows how to stream file bytes. Tagged
-   entries are always files -- commander_tag refuses to tag a folder -- so the
-   tagged loop needs no dir handling either way. */
+   with_dirs lets the single-current-entry case also pick a folder. Folders can
+   now be tagged (commander_tag allows them), and copy/cut/delete all handle a
+   folder via the recursive helpers, so the tagged loop collects folders too;
+   the per-item dispatch (file vs folder) happens where the work is done. */
 static int commander_collect(jbe_state_t *s,
                              char names[][UI_FILELIST_NAME_MAX + 1], int max,
                              bool with_dirs) {
@@ -4008,7 +4074,7 @@ static int commander_collect(jbe_state_t *s,
     for (int i = 0; i < a->n_entries; i++) if (a->entries[i].tagged) any = 1;
     if (any) {
         for (int i = 0; i < a->n_entries && n < max; i++)
-            if (a->entries[i].tagged && !a->entries[i].is_dir) {
+            if (a->entries[i].tagged && strcmp(a->entries[i].name, "..") != 0) {
                 if (names) snprintf(names[n], UI_FILELIST_NAME_MAX + 1, "%s", a->entries[i].name);
                 n++;
             }
@@ -4024,10 +4090,10 @@ static int commander_collect(jbe_state_t *s,
 /* Ctrl+C / Ctrl+X: snapshot the tagged-or-current files onto the clipboard. */
 static void commander_clip(jbe_state_t *s, bool cut) {
     ui_filelist_t *a = &s->commander_list[s->commander_pane];
-    s->clip_n = commander_collect(s, s->clip_names, JBE_CLIP_MAX, false);
+    s->clip_n = commander_collect(s, s->clip_names, JBE_CLIP_MAX, true);
     if (s->clip_n == 0) {
         snprintf(s->commander_msg, sizeof s->commander_msg,
-                 "Nothing to %s (pick a file)", cut ? "cut" : "copy");
+                 "Nothing to %s (pick a file or folder)", cut ? "cut" : "copy");
         return;
     }
     snprintf(s->clip_src, sizeof s->clip_src, "%s", a->cwd);
@@ -4037,24 +4103,60 @@ static void commander_clip(jbe_state_t *s, bool cut) {
              cut ? "Cut" : "Copied", s->clip_n, s->clip_n == 1 ? "" : "s");
 }
 
-/* Ctrl+V: copy (or move, if cut) the clipboard files into the active pane. */
+/* Do one clipboard item i into pane dst. dest_exists means a same-named target is
+   present and the user approved overwriting it (clean replace first). Files and
+   folders both handled; a same-drive move is an atomic rename, a cross-drive move
+   is copy-then-delete. Returns true on success. */
+static bool cmd_paste_one(jbe_state_t *s, ui_filelist_t *dst, int i, bool dest_exists) {
+    char sp[CMD_TREE_PATH], dp[CMD_TREE_PATH];
+    cmd_join(sp, sizeof sp, s->clip_src, s->clip_names[i]);
+    cmd_join(dp, sizeof dp, dst->cwd, s->clip_names[i]);
+    bool srcdir = cmd_is_dir(sp);
+    if (dest_exists) {                          /* approved overwrite = clean replace */
+        if (cmd_is_dir(dp)) cmd_remove_tree(dp, 0); else japi_remove(dp);
+    }
+    bool same_drive = ((s->clip_src[0] | 0x20) == (dst->cwd[0] | 0x20));   /* 'a'/'c' */
+    if (s->clip_cut) {
+        if (same_drive) return japi_rename(sp, dp);   /* atomic, also a non-empty folder */
+        bool ok = srcdir ? cmd_copy_tree(sp, dp, 0) : (cmd_copy_file(sp, dp) >= 0);
+        if (ok) { if (srcdir) cmd_remove_tree(sp, 0); else japi_remove(sp); }
+        return ok;
+    }
+    return srcdir ? cmd_copy_tree(sp, dp, 0) : (cmd_copy_file(sp, dp) >= 0);
+}
+
+/* Ctrl+V: copy (or move, if cut) the clipboard into the active pane. Resumable:
+   on a name clash it sets commander_confirm_overwrite and returns; the key
+   handler answers Y/N/A and calls back in to continue from commander_paste_idx. */
 static void commander_paste(jbe_state_t *s) {
     if (s->clip_n == 0) {
         snprintf(s->commander_msg, sizeof s->commander_msg, "Clipboard is empty"); return;
     }
     ui_filelist_t *dst = &s->commander_list[s->commander_pane];
-    int ok = 0;
-    for (int i = 0; i < s->clip_n; i++) {
-        char sp[200], dp[200];
+    while (s->commander_paste_idx < s->clip_n) {
+        int i = s->commander_paste_idx;
+        char sp[CMD_TREE_PATH], dp[CMD_TREE_PATH];
         cmd_join(sp, sizeof sp, s->clip_src, s->clip_names[i]);
         cmd_join(dp, sizeof dp, dst->cwd, s->clip_names[i]);
-        if (cmd_copy_file(sp, dp) >= 0) { ok++; if (s->clip_cut) japi_remove(sp); }
+        /* refuse the impossible: same location, or a folder into itself/its subtree */
+        if (strcmp(sp, dp) == 0 || (cmd_is_dir(sp) && cmd_path_within(sp, dp))) {
+            s->commander_paste_idx++; continue;
+        }
+        bool exists = japi_exists(dp);
+        if (exists && !s->commander_overwrite_all) {
+            s->commander_confirm_overwrite = true;   /* pause for a Y/N/A answer */
+            return;
+        }
+        if (cmd_paste_one(s, dst, i, exists)) s->commander_paste_done++;
+        s->commander_paste_idx++;
     }
+    bool cut = s->clip_cut; int done = s->commander_paste_done;
     cmd_reload(&s->commander_list[0]);
     cmd_reload(&s->commander_list[1]);
     snprintf(s->commander_msg, sizeof s->commander_msg,
-             "%s %d item%s", s->clip_cut ? "Moved" : "Pasted", ok, ok == 1 ? "" : "s");
-    if (s->clip_cut) s->clip_n = 0;     /* a cut clipboard is consumed */
+             "%s %d item%s", cut ? "Moved" : "Pasted", done, done == 1 ? "" : "s");
+    if (cut) s->clip_n = 0;                          /* a cut clipboard is consumed */
+    s->commander_paste_idx = 0; s->commander_paste_done = 0; s->commander_overwrite_all = false;
 }
 
 /* Delete (confirmed): remove the tagged-or-current files. */
@@ -4068,28 +4170,29 @@ static void commander_delete(jbe_state_t *s) {
     int ok = 0;
     for (int i = 0; i < n; i++) {
         char path[200]; cmd_join(path, sizeof path, a->cwd, names[i]);
-        if (japi_remove(path)) ok++;
+        /* A folder (even a non-empty one) is removed recursively; a file plainly. */
+        bool done = cmd_is_dir(path) ? cmd_remove_tree(path, 0) : japi_remove(path);
+        if (done) ok++;
     }
     cmd_reload(a);
     if (ok == n)
         snprintf(s->commander_msg, sizeof s->commander_msg,
                  "Deleted %d item%s", ok, ok == 1 ? "" : "s");
     else
-        /* The usual reason a remove fails is a non-empty folder: lfs_remove /
-           f_unlink only drop empty directories. */
         snprintf(s->commander_msg, sizeof s->commander_msg,
-                 "Deleted %d of %d -- a folder must be empty first", ok, n);
+                 "Deleted %d of %d (some entries could not be removed)", ok, n);
 }
 
-/* Space: toggle the tag on the current file, then step down. Shift+Up/Down
-   extend a contiguous tagged run. Folders and ".." are never tagged. */
+/* Space: toggle the tag on the current entry, then step down. Shift+Up/Down
+   extend a contiguous tagged run. Files and folders can both be tagged; only
+   ".." is never tagged (copy/cut/delete all handle a folder recursively). */
 static void commander_tag(ui_filelist_t *a, int idx) {
-    if (idx >= 0 && idx < a->n_entries && !a->entries[idx].is_dir
+    if (idx >= 0 && idx < a->n_entries
         && strcmp(a->entries[idx].name, "..") != 0)
         a->entries[idx].tagged = !a->entries[idx].tagged;
 }
 static void commander_tag_set(ui_filelist_t *a, int idx) {
-    if (idx >= 0 && idx < a->n_entries && !a->entries[idx].is_dir
+    if (idx >= 0 && idx < a->n_entries
         && strcmp(a->entries[idx].name, "..") != 0)
         a->entries[idx].tagged = true;
 }
@@ -4117,8 +4220,8 @@ static bool names_equal_ci(const char *a, const char *b) {
     return *a == *b;            /* equal only if both ended together */
 }
 
-/* Ctrl+R (after the name prompt): rename the selected file. The platform has no
-   rename, so copy to the new name in the same folder, then remove the old. */
+/* Ctrl+R (after the name prompt): rename the selected file or folder. Uses the
+   platform's atomic japi_rename, which works on a non-empty folder too. */
 static void commander_do_rename(jbe_state_t *s, const char *newname) {
     const ui_filelist_entry_t *e = cmd_pick_file(s, "rename");
     if (!e) return;
@@ -4134,36 +4237,26 @@ static void commander_do_rename(jbe_state_t *s, const char *newname) {
     cmd_join(spath, sizeof spath, a->cwd, oldname);
     cmd_join(dpath, sizeof dpath, a->cwd, newname);
 
+    bool ok;
     if (names_equal_ci(oldname, newname)) {
         /* Case-only rename (e.g. file.txt -> FILE.TXT). On a case-insensitive
            volume (the SD card / FAT) the old and new names are one and the same
-           physical file, so we cannot copy it onto itself -- the second open
-           fails. Hop through a temporary name instead: old -> tmp, drop old,
-           tmp -> new, drop tmp. If the second copy fails, restore the original
-           so nothing is lost. */
+           entry, so rename via a temporary name: old -> tmp -> new. A rename (not
+           a byte copy), so it works for a folder too. */
         char tpath[200];
         cmd_join(tpath, sizeof tpath, a->cwd, ".jbe_rename.tmp");
         japi_remove(tpath);                     /* clear any stale temp from a prior crash */
-        if (cmd_copy_file(spath, tpath) < 0) {
-            japi_remove(tpath);                 /* drop a half-written temp on failure */
-            cmd_reload(a);
-            snprintf(s->commander_msg, sizeof s->commander_msg, "Rename of %s failed", oldname); return;
-        }
-        japi_remove(spath);
-        if (cmd_copy_file(tpath, dpath) < 0) {
-            cmd_copy_file(tpath, spath);        /* best-effort restore */
-            japi_remove(tpath);
-            cmd_reload(a);
-            snprintf(s->commander_msg, sizeof s->commander_msg, "Rename of %s failed", oldname); return;
-        }
-        japi_remove(tpath);
+        ok = japi_rename(spath, tpath) && japi_rename(tpath, dpath);
     } else {
-        if (cmd_copy_file(spath, dpath) < 0) { cmd_reload(a);
-            snprintf(s->commander_msg, sizeof s->commander_msg, "Rename of %s failed", oldname); return; }
-        japi_remove(spath);
+        if (japi_exists(dpath)) {
+            snprintf(s->commander_msg, sizeof s->commander_msg, "%s already exists", newname);
+            return;
+        }
+        ok = japi_rename(spath, dpath);
     }
     cmd_reload(a);
-    snprintf(s->commander_msg, sizeof s->commander_msg, "Renamed to %s", newname);
+    if (ok) snprintf(s->commander_msg, sizeof s->commander_msg, "Renamed to %s", newname);
+    else    snprintf(s->commander_msg, sizeof s->commander_msg, "Rename of %s failed", oldname);
 }
 
 /* Open the modal name prompt (kind 0 = mkdir, 1 = rename, prefilled). */
@@ -4226,6 +4319,32 @@ static void commander_handle_key(jbe_state_t *s, uint16_t k) {
         return;
     }
 
+    /* Overwrite confirmation during a paste: Y this one, N skip it, A all the
+       rest, anything else cancels the remainder. Then resume the paste. */
+    if (s->commander_confirm_overwrite) {
+        s->commander_confirm_overwrite = false;
+        ui_filelist_t *dst = &s->commander_list[s->commander_pane];
+        if (k == 'y' || k == 'Y') {
+            if (cmd_paste_one(s, dst, s->commander_paste_idx, true)) s->commander_paste_done++;
+            s->commander_paste_idx++;
+            commander_paste(s);
+        } else if (k == 'a' || k == 'A') {
+            s->commander_overwrite_all = true;
+            commander_paste(s);
+        } else if (k == 'n' || k == 'N') {
+            s->commander_paste_idx++;
+            commander_paste(s);
+        } else {                                /* Esc / anything else: stop here */
+            cmd_reload(&s->commander_list[0]);
+            cmd_reload(&s->commander_list[1]);
+            snprintf(s->commander_msg, sizeof s->commander_msg,
+                     "Paste cancelled (%d done)", s->commander_paste_done);
+            s->commander_paste_idx = 0; s->commander_paste_done = 0;
+            s->commander_overwrite_all = false;
+        }
+        return;
+    }
+
     if (k == JAPI_KEY_ESCAPE || k == JAPI_KEY_CTRL('J')) { s->commander_active = false; return; }
     if (k == JAPI_KEY_TAB) { s->commander_pane ^= 1; return; }   /* switch active pane */
 
@@ -4246,7 +4365,11 @@ static void commander_handle_key(jbe_state_t *s, uint16_t k) {
     /* Windows-style file operations. */
     if (k == JAPI_KEY_CTRL('C')) { commander_clip(s, false); return; }   /* copy  */
     if (k == JAPI_KEY_CTRL('X')) { commander_clip(s, true);  return; }   /* cut   */
-    if (k == JAPI_KEY_CTRL('V')) { commander_paste(s);       return; }   /* paste */
+    if (k == JAPI_KEY_CTRL('V')) {                                       /* paste */
+        s->commander_paste_idx = 0; s->commander_paste_done = 0;
+        s->commander_overwrite_all = false;
+        commander_paste(s); return;
+    }
     if (k == JAPI_KEY_CTRL('R')) {                                       /* rename */
         const ui_filelist_entry_t *e = cmd_pick_file(s, "rename");
         if (e) commander_prompt(s, 1, e->name);
@@ -4373,15 +4496,25 @@ static void render_commander(jbe_state_t *s) {
             vga_set_char(JFC_MSG_ROW, caret_col, cch, JBE_PROMPT_BG, JBE_PROMPT_FG);
     } else if (s->commander_confirm_delete) {
         ui_filelist_t *a = &s->commander_list[s->commander_pane];
-        int tagged = 0;
-        for (int i = 0; i < a->n_entries; i++) if (a->entries[i].tagged) tagged++;
+        int tagged = 0; bool has_dir = false;
+        for (int i = 0; i < a->n_entries; i++)
+            if (a->entries[i].tagged) { tagged++; if (a->entries[i].is_dir) has_dir = true; }
+        if (tagged == 0 && a->n_entries) has_dir = a->entries[a->sel].is_dir;   /* current entry */
         char line[160];
         if (tagged > 1)
-            snprintf(line, sizeof line, " Delete %d files ?   Y = yes, any other key = no",
-                     tagged);
+            snprintf(line, sizeof line, " Delete %d items%s ?   Y = yes, any other key = no",
+                     tagged, has_dir ? " and all folder contents" : "");
         else
-            snprintf(line, sizeof line, " Delete %s ?   Y = yes, any other key = no",
-                     a->n_entries ? a->entries[a->sel].name : "");
+            snprintf(line, sizeof line, " Delete %s%s ?   Y = yes, any other key = no",
+                     a->n_entries ? a->entries[a->sel].name : "",
+                     has_dir ? " and all its contents" : "");
+        jfc_clear_row(JFC_MSG_ROW, JBE_PROMPT_FG, JBE_PROMPT_BG);
+        vga_print(JFC_MSG_ROW, JFC_LEFT + 2, line, JBE_PROMPT_FG, JBE_PROMPT_BG);
+    } else if (s->commander_confirm_overwrite) {
+        const char *nm = (s->commander_paste_idx < s->clip_n)
+                         ? s->clip_names[s->commander_paste_idx] : "";
+        char line[160];
+        snprintf(line, sizeof line, " Overwrite %s ?   Y = yes, N = no, A = all", nm);
         jfc_clear_row(JFC_MSG_ROW, JBE_PROMPT_FG, JBE_PROMPT_BG);
         vga_print(JFC_MSG_ROW, JFC_LEFT + 2, line, JBE_PROMPT_FG, JBE_PROMPT_BG);
     } else if (s->commander_msg[0]) {
