@@ -473,4 +473,8 @@ void jbe_redo(jbe_state_t *s);
    selection (whole lines) or the whole file. Edit -> Format. */
 void jbe_format(jbe_state_t *s);
 
+/* Set the text clipboard to a copy of `text` (NUL-terminated, stream mode). Lets
+   another mode -- e.g. the calculator -- put a value on the editor's clipboard. */
+void jbe_clip_set(jbe_state_t *s, const char *text);
+
 #endif

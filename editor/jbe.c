@@ -1036,6 +1036,19 @@ static void clip_copy_selection(jbe_state_t *s) {
     s->clip_block = false;
 }
 
+/* Set the text clipboard to a copy of a NUL-terminated string (stream mode), so
+   another mode (e.g. the calculator) can hand a value to the editor's paste. */
+void jbe_clip_set(jbe_state_t *s, const char *text) {
+    int n = (int)strlen(text);
+    char *buf = malloc((size_t)n + 1);
+    if (!buf) return;
+    memcpy(buf, text, (size_t)n + 1);
+    free(s->clip);
+    s->clip       = buf;
+    s->clip_len   = n;
+    s->clip_block = false;
+}
+
 /* Insert a single segment (no newlines) at (row, col). */
 static void line_insert_bytes(jbe_state_t *s, int row, int col,
                               const char *src, int n) {
