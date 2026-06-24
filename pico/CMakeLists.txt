@@ -20,6 +20,7 @@ pico_sdk_init()
 # The two repos, relative to this build directory.
 set(JAPIBASE "${CMAKE_CURRENT_LIST_DIR}/../../JapiBase/Japi Base Pico 2")
 set(EDITOR   "${CMAKE_CURRENT_LIST_DIR}/../editor")
+set(CALC     "${CMAKE_CURRENT_LIST_DIR}/../JapiBaseCalc/src")
 
 add_executable(japi_base_editor
     main.c
@@ -33,6 +34,13 @@ add_executable(japi_base_editor
     "${EDITOR}/jbe.c"
     "${EDITOR}/ui_filelist.c"
     "${EDITOR}/jbe_main_pico.c"
+
+    # --- Programmer's + classic calculator (JapiBaseCalc submodule, NumLock) ---
+    "${CALC}/calc.c"
+    "${CALC}/calc_engine.c"
+    "${CALC}/calc_ui.c"
+    "${CALC}/calc_eval.c"
+    "${CALC}/calc_classic.c"
 )
 
 pico_generate_pio_header(japi_base_editor "${JAPIBASE}/japi_base.pio")
@@ -50,6 +58,7 @@ target_compile_definitions(japi_base_editor PRIVATE
 target_include_directories(japi_base_editor PRIVATE
     "${JAPIBASE}"
     "${EDITOR}"
+    "${CALC}"
     ${CMAKE_CURRENT_LIST_DIR}
 )
 

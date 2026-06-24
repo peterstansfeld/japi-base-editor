@@ -9,6 +9,9 @@
 #include <time.h>
 #include "japi_base.h"
 #include "jbe.h"
+#include "calc_engine.h"    /* the embedded programmer's calculator (NumLock toggles it) */
+#include "calc_ui.h"
+#include "calc_classic.h"   /* the classic floating-point calculator (Shift+Tab switches) */
 
 static void show_open_error(const char *path) {
     vga_clear(VGA_WHITE, VGA_DARK_BLUE);
@@ -36,14 +39,50 @@ int main(int argc, char **argv) {
         ed.active_pane = 0;
     }
 
+    /* The calculator is a full-screen mode toggled with NumLock -- a peer of
+       the editor, wired exactly as on the Pico (jbe_main_pico.c) and the full
+       computer (jbb_app.c). It opens in 16-bit decimal. */
+    CalcEngine  calc;  ClassicCalc cc;
+    bool calc_active = false, calc_help = false;
+    int  calc_mode = 0;
+    calc_engine_init(&calc);
+    calc_engine_set_base(&calc, 10);
+    calc.width = CALC_W16;
+    classic_init(&cc);
+
     struct timespec ts = { 0, 10 * 1000 * 1000 };   /* ~10 ms idle */
     for (;;) {
         struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
         ed.caret_on = (((now.tv_sec * 1000u + now.tv_nsec / 1000000u) / 500u) & 1u) != 0;
         jbe_render(&ed);
+        if (calc_active) {                                   /* calc floats on top */
+            if (calc_mode == 0) calc_ui_render(&calc, calc_help);
+            else                classic_render(&cc);
+        }
         vga_update();
         while (japi_has_char()) {
             uint16_t k = japi_get_char();
+            if (k == JAPI_KEY_NUM_LOCK) { calc_active = !calc_active; break; }  /* toggle */
+            if (calc_active) {
+                if (k == JAPI_KEY_STAB) { calc_mode = !calc_mode; break; }      /* Shift+Tab */
+                if (k == JAPI_KEY_CTRL('C')) {        /* copy calc value -> editor clipboard */
+                    char vbuf[48];
+                    if (calc_mode == 0) calc_ui_copy(&calc, vbuf, sizeof vbuf);
+                    else                classic_copy(&cc, vbuf, sizeof vbuf);
+                    jbe_clip_set(&ed, vbuf);
+                    continue;
+                }
+                if (k == JAPI_KEY_CTRL('V')) {        /* paste a number from the clipboard */
+                    if (ed.clip && ed.clip_len > 0) {
+                        if (calc_mode == 0) calc_ui_paste(&calc, ed.clip);
+                        else                classic_paste(&cc, ed.clip);
+                    }
+                    continue;
+                }
+                if (calc_mode == 0) calc_ui_handle_key(&calc, &calc_help, k);
+                else                classic_handle_key(&cc, k);
+                continue;
+            }
             jbe_handle_key(&ed, k);
             /* File->New / Open / Close all act on the active pane's document. */
             if (ed.new_request)   { ed.new_request   = false; jbe_new(&ed); }

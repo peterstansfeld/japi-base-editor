@@ -7,7 +7,8 @@ CC       = gcc
 JAPIBASE = ../../JapiBase
 JAPIINC  = $(JAPIBASE)/Japi Base Pico 2
 SIM      = $(JAPIBASE)/sim
-CFLAGS   = -std=c11 -Wall -Wextra -O2 -DJAPI_SIM -I"$(JAPIINC)" -I"$(SIM)" -I"$(SIM)/shim"
+CALC     = ../JapiBaseCalc/src
+CFLAGS   = -std=c11 -Wall -Wextra -O2 -DJAPI_SIM -I"$(JAPIINC)" -I"$(SIM)" -I"$(SIM)/shim" -I"$(CALC)"
 
 # The canonical simulator source (kept in JapiBase). The simulator's own demos
 # and tests live with it in JapiBase; this repo builds only the editor.
@@ -18,8 +19,12 @@ SIMSRC = "$(SIM)/japi_sim.c"
 EDITORINC = -I../editor
 JBE_SRC   = ../editor/jbe.c ../editor/ui_filelist.c
 
+# The embedded calculator (NumLock), built from the JapiBaseCalc submodule.
+CALC_SRC  = $(CALC)/calc.c $(CALC)/calc_engine.c $(CALC)/calc_ui.c \
+            $(CALC)/calc_eval.c $(CALC)/calc_classic.c
+
 jbe: ../editor/jbe_main.c ../editor/jbe.h ../editor/ui_filelist.h
-	$(CC) $(CFLAGS) $(EDITORINC) -o jbe $(SIMSRC) $(JBE_SRC) ../editor/jbe_main.c
+	$(CC) $(CFLAGS) $(EDITORINC) -o jbe $(SIMSRC) $(JBE_SRC) $(CALC_SRC) ../editor/jbe_main.c
 
 jbe_test: ../editor/jbe_test.c ../editor/jbe.h ../editor/ui_filelist.h
 	$(CC) $(CFLAGS) $(EDITORINC) -I. -o jbe_test $(SIMSRC) $(JBE_SRC) ../editor/jbe_test.c

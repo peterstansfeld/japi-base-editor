@@ -1,0 +1,3 @@
+[submodule "JapiBaseCalc"]
+	path = JapiBaseCalc
+	url = https://github.com/JanFromBelgium/JapiBaseCalc.git
